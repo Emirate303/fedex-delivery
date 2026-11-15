@@ -1,0 +1,133 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ShipmentStatus {
+  PENDING
+  CONFIRMED
+  PICKED_UP
+  IN_TRANSIT
+  AT_FACILITY
+  OUT_FOR_DELIVERY
+  DELIVERED
+  EXCEPTION
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+model Shipment {
+  id                String         @id @default(cuid())
+  trackingNumber    String         @unique
+
+  senderName        String
+  senderEmail       String
+  senderPhone       String
+  senderAddress     String
+  senderCity        String
+  senderState       String?
+  senderPostal      String?
+  senderCountry     String
+
+  recipientName     String
+  recipientEmail    String
+  recipientPhone    String
+  recipientAddress  String
+  recipientCity     String
+  recipientState    String?
+  recipientPostal   String?
+  recipientCountry  String
+
+  description       String
+  weight            Float
+  length            Float
+  width             Float
+  height            Float
+
+  serviceCode       String
+  serviceName       String
+  shippingPrice     Decimal        @db.Decimal(10, 2)
+
+  status            ShipmentStatus @default(PENDING)
+
+  estimatedDelivery DateTime?
+  deliveredAt       DateTime?
+
+  package           Package?
+  trackingEvents    TrackingEvent[]
+  payment           Payment?
+
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@index([senderEmail])
+  @@index([recipientEmail])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Package {
+  id          String   @id @default(cuid())
+  shipmentId  String   @unique
+  shipment    Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  description String
+  weight      Float
+  length      Float
+  width       Float
+  height      Float
+
+  createdAt   DateTime @default(now())
+}
+
+model TrackingEvent {
+  id          String         @id @default(cuid())
+  shipmentId  String
+  shipment    Shipment       @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  status      ShipmentStatus
+  location    String
+  description String
+  eventDate   DateTime       @default(now())
+
+  createdAt   DateTime       @default(now())
+
+  @@index([shipmentId, eventDate])
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  shipmentId  String        @unique
+  shipment    Shipment      @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  amount      Decimal       @db.Decimal(10, 2)
+  currency    String        @default("USD")
+  status      PaymentStatus @default(PENDING)
+  reference   String?       @unique
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model ShippingService {
+  id            String   @id @default(cuid())
+  code          String   @unique
+  name          String
+  description   String
+  basePrice     Decimal  @db.Decimal(10, 2)
+  estimatedDays Int
+  active        Boolean  @default(true)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
