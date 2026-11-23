@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import {
   Package,
@@ -14,6 +14,7 @@ import {
   Zap,
   Loader2,
   Copy,
+  CreditCard,
 } from "lucide-react";
 
 type AddressDetails = {
@@ -73,8 +74,25 @@ const services = [
   },
 ];
 
+const countries = [
+  "United States",
+  "United Kingdom",
+  "Canada",
+  "Nigeria",
+  "Germany",
+  "France",
+];
+
 export default function ShippingPage() {
   const [step, setStep] = useState(1);
+  const [submitting, setSubmitting] = useState(false);
+  const [paying, setPaying] = useState(false);
+  const [error, setError] = useState("");
+
+  const [createdShipment, setCreatedShipment] =
+    useState<CreatedShipment | null>(null);
+
+  const idempotencyKeyRef = useRef<string | null>(null);
 
   const [sender, setSender] = useState<AddressDetails>({
     name: "",
@@ -107,14 +125,13 @@ export default function ShippingPage() {
   });
 
   const [service, setService] = useState("STANDARD");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  const [createdShipment, setCreatedShipment] =
-    useState<CreatedShipment | null>(null);
 
   const selectedService = services.find(
     (item) => item.id === service
   )!;
+
+  const inputClass =
+    "w-full border border-gray-300 rounded-md p-3 outline-none focus:border-purple-700 focus:ring-1 focus:ring-purple-700";
 
   function updateSender(
     field: keyof AddressDetails,
@@ -158,7 +175,9 @@ export default function ShippingPage() {
         !sender.city.trim() ||
         !sender.country.trim()
       ) {
-        setError("Please complete all required sender information.");
+        setError(
+          "Please complete all required sender information."
+        );
         return;
       }
 
@@ -177,12 +196,18 @@ export default function ShippingPage() {
         !recipient.city.trim() ||
         !recipient.country.trim()
       ) {
-        setError("Please complete all required recipient information.");
+        setError(
+          "Please complete all required recipient information."
+        );
         return;
       }
 
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient.email)) {
-        setError("Please enter a valid recipient email address.");
+      if (
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient.email)
+      ) {
+        setError(
+          "Please enter a valid recipient email address."
+        );
         return;
       }
     }
@@ -198,7 +223,10 @@ export default function ShippingPage() {
       if (
         !pkg.description.trim() ||
         measurements.some(
-          (value) => !value || !Number.isFinite(Number(value)) || Number(value) <= 0
+          (value) =>
+            !value ||
+            !Number.isFinite(Number(value)) ||
+            Number(value) <= 0
         )
       ) {
         setError("Please enter valid package information.");
@@ -221,10 +249,15 @@ export default function ShippingPage() {
     setError("");
 
     try {
+      if (!idempotencyKeyRef.current) {
+        idempotencyKeyRef.current = crypto.randomUUID();
+      }
+
       const response = await fetch("/api/shipments", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKeyRef.current,
         },
         body: JSON.stringify({
           sender,
@@ -242,11 +275,16 @@ export default function ShippingPage() {
 
       const data = await response.json();
 
-      if (!response.ok || !data.success) {
+      if (!response.ok || !data.success || !data.shipment) {
         throw new Error(
-          data.message || "Unable to create shipment."
+          data.message ||
+            data.error ||
+            "Unable to create shipment. Please try again."
         );
       }
+
+      // Clear the key only after successful shipment creation.
+      idempotencyKeyRef.current = null;
 
       setCreatedShipment(data.shipment);
     } catch (err) {
@@ -260,6 +298,50 @@ export default function ShippingPage() {
     }
   }
 
+  async function startPayment() {
+    if (!createdShipment || paying) return;
+
+    setPaying(true);
+    setError("");
+
+    try {
+      const response = await fetch("/api/payments/checkout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          trackingNumber: createdShipment.trackingNumber,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (
+        !response.ok ||
+        !data.success ||
+        !data.checkoutUrl
+      ) {
+        throw new Error(
+          data.error ||
+            data.message ||
+            "Unable to start payment. Please try again."
+        );
+      }
+
+      // Redirect the customer to Stripe Checkout.
+      window.location.assign(data.checkoutUrl);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Payment could not be started. Please try again."
+      );
+
+      setPaying(false);
+    }
+  }
+
   async function copyTrackingNumber() {
     if (!createdShipment) return;
 
@@ -267,15 +349,14 @@ export default function ShippingPage() {
       await navigator.clipboard.writeText(
         createdShipment.trackingNumber
       );
+
       alert("Tracking number copied.");
     } catch {
       setError("Unable to copy tracking number.");
     }
   }
 
-  const inputClass =
-    "w-full border border-gray-300 rounded-md p-3 outline-none focus:border-purple-700 focus:ring-1 focus:ring-purple-700";
-
+  // Shipment-created confirmation screen
   if (createdShipment) {
     return (
       <main className="min-h-screen bg-gray-50">
@@ -285,6 +366,7 @@ export default function ShippingPage() {
               <span className="text-3xl font-black text-purple-800">
                 Fed<span className="text-orange-500">Ex</span>
               </span>
+
               <span className="font-bold text-gray-700">
                 Delivery
               </span>
@@ -319,9 +401,11 @@ export default function ShippingPage() {
                 </p>
 
                 <button
+                  type="button"
                   onClick={copyTrackingNumber}
                   className="p-2 rounded-md hover:bg-purple-100"
                   title="Copy tracking number"
+                  aria-label="Copy tracking number"
                 >
                   <Copy size={20} />
                 </button>
@@ -330,53 +414,114 @@ export default function ShippingPage() {
 
             <div className="text-left border rounded-lg divide-y mb-8">
               <div className="p-4 flex justify-between gap-4">
-                <span className="text-gray-500">Shipment status</span>
+                <span className="text-gray-500">
+                  Shipment status
+                </span>
+
                 <span className="font-bold">
                   {createdShipment.status}
                 </span>
               </div>
 
               <div className="p-4 flex justify-between gap-4">
-                <span className="text-gray-500">Delivery service</span>
+                <span className="text-gray-500">
+                  Delivery service
+                </span>
+
                 <span className="font-bold">
                   {createdShipment.service}
                 </span>
               </div>
 
               <div className="p-4 flex justify-between gap-4">
-                <span className="text-gray-500">Shipping price</span>
+                <span className="text-gray-500">
+                  Shipping price
+                </span>
+
                 <span className="font-bold">
                   {createdShipment.currency}{" "}
-                  {Number(createdShipment.shippingPrice).toFixed(2)}
+                  {Number(
+                    createdShipment.shippingPrice
+                  ).toFixed(2)}
                 </span>
               </div>
 
               <div className="p-4 flex justify-between gap-4">
-                <span className="text-gray-500">Payment status</span>
-                <span className="font-bold">
+                <span className="text-gray-500">
+                  Payment status
+                </span>
+
+                <span
+                  className={`font-bold ${
+                    createdShipment.paymentStatus === "PAID"
+                      ? "text-green-600"
+                      : "text-orange-600"
+                  }`}
+                >
                   {createdShipment.paymentStatus}
                 </span>
               </div>
             </div>
 
-            <p className="text-sm text-gray-500 mb-6">
-              Your shipment is currently pending. Payment and
-              actual delivery arrangements have not yet been completed.
-            </p>
+            {createdShipment.paymentStatus === "PAID" ? (
+              <div className="mb-6 p-4 rounded-lg bg-green-50 border border-green-200 text-green-700 text-sm">
+                Your payment has been confirmed.
+              </div>
+            ) : (
+              <div className="mb-6 p-4 rounded-lg bg-orange-50 border border-orange-200 text-orange-800 text-sm">
+                Your shipment has been created, but payment
+                has not yet been completed. Complete payment
+                below to proceed with the next step.
+              </div>
+            )}
+
+            {error && (
+              <div
+                role="alert"
+                className="mb-5 p-4 rounded-md bg-red-50 border border-red-200 text-red-700 text-sm text-left"
+              >
+                {error}
+              </div>
+            )}
 
             <div className="flex flex-col sm:flex-row gap-3 justify-center">
-              <Link
-                href="/"
-                className="purple-button rounded-md text-center"
-              >
-                Back to Home
-              </Link>
+              {createdShipment.paymentStatus !== "PAID" && (
+                <button
+                  type="button"
+                  onClick={startPayment}
+                  disabled={paying}
+                  className="orange-button rounded-md text-center flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {paying ? (
+                    <>
+                      <Loader2
+                        size={18}
+                        className="animate-spin"
+                      />
+                      Redirecting to Payment...
+                    </>
+                  ) : (
+                    <>
+                      <CreditCard size={18} />
+                      Pay Now
+                      <ArrowRight size={18} />
+                    </>
+                  )}
+                </button>
+              )}
 
               <Link
                 href="/tracking"
-                className="orange-button rounded-md text-center"
+                className="purple-button rounded-md text-center flex items-center justify-center gap-2"
               >
                 Track Shipment
+              </Link>
+
+              <Link
+                href="/"
+                className="border border-gray-300 rounded-md px-5 py-3 text-center font-semibold text-gray-700 hover:bg-gray-50"
+              >
+                Back to Home
               </Link>
             </div>
           </div>
@@ -391,6 +536,7 @@ export default function ShippingPage() {
     );
   }
 
+  // Shipment creation form
   return (
     <main className="min-h-screen bg-gray-50">
       <header className="bg-white border-b">
@@ -399,6 +545,7 @@ export default function ShippingPage() {
             <span className="text-3xl font-black text-purple-800">
               Fed<span className="text-orange-500">Ex</span>
             </span>
+
             <span className="font-bold text-gray-700">
               Delivery
             </span>
@@ -425,7 +572,8 @@ export default function ShippingPage() {
           </h1>
 
           <p className="text-purple-100">
-            Enter your shipment details and select a delivery service.
+            Enter your shipment details and select a delivery
+            service.
           </p>
         </div>
       </section>
@@ -468,11 +616,14 @@ export default function ShippingPage() {
         <div className="grid lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2">
             <div className="bg-white rounded-xl shadow-sm border p-6 md:p-9">
-
+              {/* Step 1: Sender */}
               {step === 1 && (
                 <>
                   <div className="flex items-center gap-3 mb-8">
-                    <User className="text-purple-800" size={28} />
+                    <User
+                      className="text-purple-800"
+                      size={28}
+                    />
 
                     <div>
                       <h2 className="text-2xl font-bold">
@@ -480,7 +631,8 @@ export default function ShippingPage() {
                       </h2>
 
                       <p className="text-gray-500 text-sm">
-                        Enter the details of the person sending the package.
+                        Enter the details of the person sending
+                        the package.
                       </p>
                     </div>
                   </div>
@@ -489,12 +641,28 @@ export default function ShippingPage() {
                     {(
                       [
                         ["name", "Full Name", "John Smith"],
-                        ["email", "Email Address", "john@example.com"],
-                        ["phone", "Phone Number", "+1 555 000 0000"],
-                        ["address", "Street Address", "123 Main Street"],
+                        [
+                          "email",
+                          "Email Address",
+                          "john@example.com",
+                        ],
+                        [
+                          "phone",
+                          "Phone Number",
+                          "+1 555 000 0000",
+                        ],
+                        [
+                          "address",
+                          "Street Address",
+                          "123 Main Street",
+                        ],
                         ["city", "City", "Los Angeles"],
                         ["state", "State", "California"],
-                        ["postalCode", "ZIP / Postal Code", "90001"],
+                        [
+                          "postalCode",
+                          "ZIP / Postal Code",
+                          "90001",
+                        ],
                       ] as const
                     ).map(([field, label, placeholder]) => (
                       <div key={field}>
@@ -525,15 +693,10 @@ export default function ShippingPage() {
                           updateSender("country", e.target.value)
                         }
                       >
-                        {[
-                          "United States",
-                          "United Kingdom",
-                          "Canada",
-                          "Nigeria",
-                          "Germany",
-                          "France",
-                        ].map((country) => (
-                          <option key={country}>{country}</option>
+                        {countries.map((country) => (
+                          <option key={country} value={country}>
+                            {country}
+                          </option>
                         ))}
                       </select>
                     </div>
@@ -541,10 +704,14 @@ export default function ShippingPage() {
                 </>
               )}
 
+              {/* Step 2: Recipient */}
               {step === 2 && (
                 <>
                   <div className="flex items-center gap-3 mb-8">
-                    <MapPin className="text-purple-800" size={28} />
+                    <MapPin
+                      className="text-purple-800"
+                      size={28}
+                    />
 
                     <div>
                       <h2 className="text-2xl font-bold">
@@ -560,13 +727,33 @@ export default function ShippingPage() {
                   <div className="grid md:grid-cols-2 gap-5">
                     {(
                       [
-                        ["name", "Full Name", "Recipient Name"],
-                        ["email", "Email Address", "recipient@example.com"],
-                        ["phone", "Phone Number", "+1 555 000 0000"],
-                        ["address", "Street Address", "456 Park Avenue"],
+                        [
+                          "name",
+                          "Full Name",
+                          "Recipient Name",
+                        ],
+                        [
+                          "email",
+                          "Email Address",
+                          "recipient@example.com",
+                        ],
+                        [
+                          "phone",
+                          "Phone Number",
+                          "+1 555 000 0000",
+                        ],
+                        [
+                          "address",
+                          "Street Address",
+                          "456 Park Avenue",
+                        ],
                         ["city", "City", "New York"],
                         ["state", "State", "New York"],
-                        ["postalCode", "ZIP / Postal Code", "10001"],
+                        [
+                          "postalCode",
+                          "ZIP / Postal Code",
+                          "10001",
+                        ],
                       ] as const
                     ).map(([field, label, placeholder]) => (
                       <div key={field}>
@@ -579,7 +766,10 @@ export default function ShippingPage() {
                           placeholder={placeholder}
                           value={recipient[field]}
                           onChange={(e) =>
-                            updateRecipient(field, e.target.value)
+                            updateRecipient(
+                              field,
+                              e.target.value
+                            )
                           }
                         />
                       </div>
@@ -594,18 +784,16 @@ export default function ShippingPage() {
                         className={inputClass}
                         value={recipient.country}
                         onChange={(e) =>
-                          updateRecipient("country", e.target.value)
+                          updateRecipient(
+                            "country",
+                            e.target.value
+                          )
                         }
                       >
-                        {[
-                          "United States",
-                          "United Kingdom",
-                          "Canada",
-                          "Nigeria",
-                          "Germany",
-                          "France",
-                        ].map((country) => (
-                          <option key={country}>{country}</option>
+                        {countries.map((country) => (
+                          <option key={country} value={country}>
+                            {country}
+                          </option>
                         ))}
                       </select>
                     </div>
@@ -613,10 +801,14 @@ export default function ShippingPage() {
                 </>
               )}
 
+              {/* Step 3: Package */}
               {step === 3 && (
                 <>
                   <div className="flex items-center gap-3 mb-8">
-                    <Package className="text-purple-800" size={28} />
+                    <Package
+                      className="text-purple-800"
+                      size={28}
+                    />
 
                     <div>
                       <h2 className="text-2xl font-bold">
@@ -624,7 +816,8 @@ export default function ShippingPage() {
                       </h2>
 
                       <p className="text-gray-500 text-sm">
-                        Provide the package description and measurements.
+                        Provide the package description and
+                        measurements.
                       </p>
                     </div>
                   </div>
@@ -640,7 +833,10 @@ export default function ShippingPage() {
                         placeholder="Example: Clothing, electronics, documents"
                         value={pkg.description}
                         onChange={(e) =>
-                          updatePackage("description", e.target.value)
+                          updatePackage(
+                            "description",
+                            e.target.value
+                          )
                         }
                       />
                     </div>
@@ -688,7 +884,10 @@ export default function ShippingPage() {
                             placeholder="0"
                             value={pkg[field]}
                             onChange={(e) =>
-                              updatePackage(field, e.target.value)
+                              updatePackage(
+                                field,
+                                e.target.value
+                              )
                             }
                           />
                         </div>
@@ -698,10 +897,14 @@ export default function ShippingPage() {
                 </>
               )}
 
+              {/* Step 4: Delivery service */}
               {step === 4 && (
                 <>
                   <div className="flex items-center gap-3 mb-8">
-                    <Truck className="text-purple-800" size={28} />
+                    <Truck
+                      className="text-purple-800"
+                      size={28}
+                    />
 
                     <div>
                       <h2 className="text-2xl font-bold">
@@ -735,7 +938,9 @@ export default function ShippingPage() {
                           />
 
                           <div className="flex-1">
-                            <h3 className="font-bold">{item.name}</h3>
+                            <h3 className="font-bold">
+                              {item.name}
+                            </h3>
 
                             <p className="text-sm text-gray-500">
                               {item.description}
@@ -770,34 +975,60 @@ export default function ShippingPage() {
 
                     <div className="space-y-3 text-sm">
                       <div className="flex justify-between gap-3">
-                        <span className="text-gray-500">Sender</span>
-                        <span className="font-bold">{sender.name}</span>
+                        <span className="text-gray-500">
+                          Sender
+                        </span>
+
+                        <span className="font-bold text-right">
+                          {sender.name}
+                        </span>
                       </div>
 
                       <div className="flex justify-between gap-3">
-                        <span className="text-gray-500">Recipient</span>
-                        <span className="font-bold">{recipient.name}</span>
+                        <span className="text-gray-500">
+                          Recipient
+                        </span>
+
+                        <span className="font-bold text-right">
+                          {recipient.name}
+                        </span>
                       </div>
 
                       <div className="flex justify-between gap-3">
-                        <span className="text-gray-500">Package</span>
-                        <span className="font-bold">{pkg.description}</span>
+                        <span className="text-gray-500">
+                          Package
+                        </span>
+
+                        <span className="font-bold text-right">
+                          {pkg.description}
+                        </span>
                       </div>
 
                       <div className="flex justify-between gap-3">
-                        <span className="text-gray-500">Weight</span>
-                        <span className="font-bold">{pkg.weight} kg</span>
-                      </div>
+                        <span className="text-gray-500">
+                          Weight
+                        </span>
 
-                      <div className="flex justify-between gap-3">
-                        <span className="text-gray-500">Service</span>
                         <span className="font-bold">
+                          {pkg.weight} kg
+                        </span>
+                      </div>
+
+                      <div className="flex justify-between gap-3">
+                        <span className="text-gray-500">
+                          Service
+                        </span>
+
+                        <span className="font-bold text-right">
                           {selectedService.name}
                         </span>
                       </div>
 
                       <div className="flex justify-between border-t pt-5 text-lg">
-                        <span className="font-bold">Estimated Price</span>
+                        <span className="font-bold">
+                          Estimated Price
+                        </span>
+
                         <span className="font-black text-purple-800">
                           ${selectedService.price.toFixed(2)}
                         </span>
@@ -805,8 +1036,9 @@ export default function ShippingPage() {
                     </div>
 
                     <p className="text-xs text-gray-400 mt-5">
-                      Demonstration pricing. The server calculates the
-                      amount saved with your shipment.
+                      Final shipping charges are calculated and
+                      confirmed by the server when your shipment
+                      is created.
                     </p>
                   </div>
                 </>
@@ -827,7 +1059,7 @@ export default function ShippingPage() {
                     type="button"
                     onClick={previousStep}
                     disabled={submitting}
-                    className="px-6 py-3 border rounded-md font-bold flex items-center gap-2"
+                    className="px-6 py-3 border rounded-md font-bold flex items-center gap-2 disabled:opacity-50"
                   >
                     <ArrowLeft size={18} />
                     Back
@@ -855,11 +1087,14 @@ export default function ShippingPage() {
                     type="button"
                     onClick={createShipment}
                     disabled={submitting}
-                    className="orange-button rounded-md flex items-center gap-2 disabled:opacity-50"
+                    className="orange-button rounded-md flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {submitting ? (
                       <>
-                        <Loader2 size={18} className="animate-spin" />
+                        <Loader2
+                          size={18}
+                          className="animate-spin"
+                        />
                         Creating Shipment...
                       </>
                     ) : (
@@ -874,6 +1109,7 @@ export default function ShippingPage() {
             </div>
           </div>
 
+          {/* Sidebar */}
           <aside className="space-y-6">
             <div className="bg-white rounded-xl border shadow-sm p-6">
               <h3 className="font-bold text-lg mb-5">
@@ -909,15 +1145,18 @@ export default function ShippingPage() {
             </div>
 
             <div className="bg-purple-800 text-white rounded-xl p-7">
-              <Package size={35} className="text-orange-400 mb-5" />
+              <Package
+                size={35}
+                className="text-orange-400 mb-5"
+              />
 
               <h3 className="font-bold text-xl mb-3">
                 Need Shipping Help?
               </h3>
 
               <p className="text-purple-100 text-sm leading-relaxed">
-                Contact our support team for assistance with shipment
-                preparation and delivery questions.
+                Contact our support team for assistance with
+                shipment preparation and delivery questions.
               </p>
             </div>
           </aside>

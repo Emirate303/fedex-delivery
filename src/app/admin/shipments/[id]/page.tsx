@@ -1,8 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+
 import { requireAdmin } from "@/lib/supabase/admin";
 import { prisma } from "@/lib/prisma";
+
 import StatusManager from "./status-manager";
+import TrackingEventForm from "./tracking-event-form";
+
 export const dynamic = "force-dynamic";
 
 export default async function ShipmentDetailsPage({
@@ -50,11 +54,14 @@ export default async function ShipmentDetailsPage({
             <h2 className="mb-4 text-xl font-semibold">
               Shipment Information
             </h2>
+
             <p>Status: {shipment.status.replaceAll("_", " ")}</p>
             <p>Service: {shipment.serviceName}</p>
+
             <p>
               Price: ${Number(shipment.shippingPrice).toFixed(2)}
             </p>
+
             <p>Created: {shipment.createdAt.toLocaleString()}</p>
           </section>
 
@@ -62,12 +69,13 @@ export default async function ShipmentDetailsPage({
             <h2 className="mb-4 text-xl font-semibold">
               Recipient Information
             </h2>
+
             <p>Name: {shipment.recipientName}</p>
             <p>Email: {shipment.recipientEmail}</p>
             <p>Phone: {shipment.recipientPhone}</p>
             <p>Address: {shipment.recipientAddress}</p>
             <p>City: {shipment.recipientCity}</p>
-            <p>State: {shipment.recipientState}</p>
+            <p>State: {shipment.recipientState || "N/A"}</p>
             <p>Country: {shipment.recipientCountry}</p>
           </section>
 
@@ -75,9 +83,11 @@ export default async function ShipmentDetailsPage({
             <h2 className="mb-4 text-xl font-semibold">
               Package Information
             </h2>
+
             <p>
               Description: {shipment.package?.description ?? "N/A"}
             </p>
+
             <p>
               Weight: {shipment.package?.weight?.toString() ?? "N/A"}
             </p>
@@ -87,7 +97,9 @@ export default async function ShipmentDetailsPage({
             <h2 className="mb-4 text-xl font-semibold">
               Payment Information
             </h2>
+
             <p>Status: {shipment.payment?.status ?? "N/A"}</p>
+
             <p>
               Amount: ${Number(shipment.shippingPrice).toFixed(2)}
             </p>
@@ -98,10 +110,17 @@ export default async function ShipmentDetailsPage({
           <h2 className="mb-5 text-xl font-semibold">
             Tracking History
           </h2>
-        <StatusManager
-  shipmentId={shipment.id}
-  currentStatus={shipment.status}
-/>
+
+          <StatusManager
+            shipmentId={shipment.id}
+            currentStatus={shipment.status}
+          />
+
+          <TrackingEventForm
+            shipmentId={shipment.id}
+            currentStatus={shipment.status}
+          />
+
           {shipment.trackingEvents.length === 0 ? (
             <p>No tracking events available.</p>
           ) : (
@@ -114,9 +133,15 @@ export default async function ShipmentDetailsPage({
                   <p className="font-semibold">
                     {event.status.replaceAll("_", " ")}
                   </p>
+
+                  <p className="text-sm font-medium text-blue-700">
+                    {event.location}
+                  </p>
+
                   <p className="text-sm text-gray-600">
                     {event.description}
                   </p>
+
                   <p className="text-xs text-gray-400">
                     {event.createdAt.toLocaleString()}
                   </p>

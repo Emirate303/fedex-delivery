@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
+import { Prisma } from "@prisma/client";
+import { z } from "zod";
+
 import { prisma } from "@/lib/prisma";
+import { checkShipmentRateLimit } from "@/lib/rate-limit";
 
 import {
   sendShipmentCreatedEmail,
@@ -9,6 +13,7 @@ import {
 
 export const runtime = "nodejs";
 
+// Server-controlled shipping services.
 const SHIPPING_SERVICES = {
   EXPRESS: {
     name: "Express Delivery",
@@ -27,214 +32,362 @@ const SHIPPING_SERVICES = {
   },
 } as const;
 
-function isValidText(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
+// Customer contact validation.
+const contactSchema = z.object({
+  name: z.string().trim().min(2).max(120),
 
-function isValidNumber(value: unknown): value is number {
-  return (
-    typeof value === "number" &&
-    Number.isFinite(value) &&
-    value > 0
+  email: z
+    .string()
+    .trim()
+    .email()
+    .max(254)
+    .transform((value) => value.toLowerCase()),
+
+  phone: z
+    .string()
+    .trim()
+    .min(7)
+    .max(30)
+    .regex(/^\+?[\d\s().-]+$/, "Invalid phone number."),
+
+  address: z.string().trim().min(3).max(250),
+  city: z.string().trim().min(2).max(100),
+  state: z.string().trim().max(100).nullish(),
+  postalCode: z.string().trim().max(30).nullish(),
+  country: z.string().trim().min(2).max(100),
+});
+
+// Package validation.
+const packageSchema = z.object({
+  description: z.string().trim().min(3).max(500),
+  weight: z.number().finite().positive().max(10000),
+  length: z.number().finite().positive().max(10000),
+  width: z.number().finite().positive().max(10000),
+  height: z.number().finite().positive().max(10000),
+});
+
+// Complete shipment request validation.
+const shipmentSchema = z.object({
+  sender: contactSchema,
+  recipient: contactSchema,
+  package: packageSchema,
+  serviceCode: z.enum([
+    "EXPRESS",
+    "STANDARD",
+    "INTERNATIONAL",
+  ]),
+});
+
+type ShipmentWithRelations = Prisma.ShipmentGetPayload<{
+  include: {
+    package: true;
+    trackingEvents: true;
+    payment: true;
+  };
+}>;
+
+// Standardized shipment response.
+function shipmentResponse(
+  shipment: {
+    id: string;
+    trackingNumber: string;
+    status: string;
+    serviceName: string;
+    shippingPrice: { toString(): string };
+    estimatedDelivery: Date | null;
+    payment: { status: string } | null;
+  },
+  message: string,
+  emailSent: boolean,
+  senderEmailSent: boolean,
+  statusCode: number
+) {
+  return NextResponse.json(
+    {
+      success: true,
+      message,
+      emailSent,
+      senderEmailSent,
+
+      shipment: {
+        id: shipment.id,
+        trackingNumber: shipment.trackingNumber,
+        status: shipment.status,
+        service: shipment.serviceName,
+        shippingPrice: shipment.shippingPrice.toString(),
+        currency: "USD",
+        estimatedDelivery: shipment.estimatedDelivery,
+        paymentStatus: shipment.payment?.status,
+      },
+    },
+    { status: statusCode }
   );
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    // Require an idempotency key from the shipping form.
+    const rawIdempotencyKey = request.headers.get("Idempotency-Key");
+
+    if (
+      !rawIdempotencyKey ||
+      !/^[A-Za-z0-9._:-]{16,128}$/.test(rawIdempotencyKey)
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "A valid shipment request key is required. Please refresh the page and try again.",
+        },
+        { status: 400 }
+      );
+    }
+
+    // Hash the key before storing it in the database.
+    const idempotencyKey = createHash("sha256")
+      .update(rawIdempotencyKey)
+      .digest("hex");
+
+    // Check whether this request already created a shipment.
+    const existingShipment = await prisma.shipment.findUnique({
+      where: {
+        idempotencyKey,
+      },
+      include: {
+        payment: true,
+      },
+    });
+
+    if (existingShipment) {
+      return shipmentResponse(
+        existingShipment,
+        "This shipment was already created for this request.",
+        false,
+        false,
+        200
+      );
+    }
+
+    // Rate limiting for new shipment requests.
+    let rateLimit;
+
+    try {
+      rateLimit = await checkShipmentRateLimit(request);
+    } catch (error) {
+      console.error("Shipment rate-limit service error:", error);
+
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Shipment service is temporarily unavailable. Please try again later.",
+        },
+        { status: 503 }
+      );
+    }
+
+    if (!rateLimit.success) {
+      if (!rateLimit.configured) {
+        return NextResponse.json(
+          {
+            success: false,
+            message: "Shipment protection is not configured.",
+          },
+          { status: 503 }
+        );
+      }
+
+      const retryAfter = Math.max(
+        1,
+        Math.ceil((rateLimit.reset - Date.now()) / 1000)
+      );
+
+      return NextResponse.json(
+        {
+          success: false,
+          message:
+            "Too many shipment submissions. Please try again later.",
+          limit: rateLimit.limit,
+          remaining: rateLimit.remaining,
+        },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(retryAfter),
+            "X-RateLimit-Limit": String(rateLimit.limit),
+            "X-RateLimit-Remaining": String(rateLimit.remaining),
+          },
+        }
+      );
+    }
+
+    // Parse JSON safely.
+    let body: unknown;
+
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Invalid JSON request.",
+        },
+        { status: 400 }
+      );
+    }
+
+    // Validate incoming data.
+    const validation = shipmentSchema.safeParse(body);
+
+    if (!validation.success) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Please check your shipment information.",
+          errors: validation.error.issues.map((issue) => ({
+            field: issue.path.join("."),
+            message: issue.message,
+          })),
+        },
+        { status: 400 }
+      );
+    }
 
     const {
       sender,
       recipient,
       package: packageDetails,
       serviceCode,
-    } = body;
+    } = validation.data;
 
-    if (!sender || !recipient || !packageDetails) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Missing shipment information.",
-        },
-        { status: 400 }
-      );
-    }
+    // Retrieve trusted server-side shipping information.
+    const service = SHIPPING_SERVICES[serviceCode];
 
-    const requiredSenderFields = [
-      "name",
-      "email",
-      "phone",
-      "address",
-      "city",
-      "country",
-    ];
-
-    const requiredRecipientFields = [
-      "name",
-      "email",
-      "phone",
-      "address",
-      "city",
-      "country",
-    ];
-
-    for (const field of requiredSenderFields) {
-      if (!isValidText(sender[field])) {
-        return NextResponse.json(
-          {
-            success: false,
-            message: `Sender ${field} is required.`,
-          },
-          { status: 400 }
-        );
-      }
-    }
-
-    for (const field of requiredRecipientFields) {
-      if (!isValidText(recipient[field])) {
-        return NextResponse.json(
-          {
-            success: false,
-            message: `Recipient ${field} is required.`,
-          },
-          { status: 400 }
-        );
-      }
-    }
-
-    if (!isValidText(packageDetails.description)) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Package description is required.",
-        },
-        { status: 400 }
-      );
-    }
-
-    const dimensions = [
-      packageDetails.weight,
-      packageDetails.length,
-      packageDetails.width,
-      packageDetails.height,
-    ];
-
-    if (!dimensions.every(isValidNumber)) {
-      return NextResponse.json(
-        {
-          success: false,
-          message:
-            "Package weight and dimensions must be positive numbers.",
-        },
-        { status: 400 }
-      );
-    }
-
-    if (
-      typeof serviceCode !== "string" ||
-      !Object.prototype.hasOwnProperty.call(
-        SHIPPING_SERVICES,
-        serviceCode
-      )
-    ) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Invalid shipping service.",
-        },
-        { status: 400 }
-      );
-    }
-
-    const service =
-      SHIPPING_SERVICES[
-        serviceCode as keyof typeof SHIPPING_SERVICES
-      ];
-
-    const trackingNumber = `FDL${randomBytes(6)
+    // Generate tracking number.
+    const trackingNumber = `FDL${randomBytes(8)
       .toString("hex")
       .toUpperCase()}`;
 
+    // Calculate estimated delivery.
     const estimatedDelivery = new Date();
 
     estimatedDelivery.setDate(
       estimatedDelivery.getDate() + service.days
     );
 
-    // Create shipment in database
-    const shipment = await prisma.shipment.create({
-      data: {
-        trackingNumber,
+    // Create shipment and related records atomically.
+    let shipment: ShipmentWithRelations;
 
-        senderName: sender.name.trim(),
-        senderEmail: sender.email.trim(),
-        senderPhone: sender.phone.trim(),
-        senderAddress: sender.address.trim(),
-        senderCity: sender.city.trim(),
-        senderState: sender.state || null,
-        senderPostal: sender.postalCode || null,
-        senderCountry: sender.country.trim(),
+    try {
+      shipment = await prisma.shipment.create({
+        data: {
+          trackingNumber,
+          idempotencyKey,
 
-        recipientName: recipient.name.trim(),
-        recipientEmail: recipient.email.trim(),
-        recipientPhone: recipient.phone.trim(),
-        recipientAddress: recipient.address.trim(),
-        recipientCity: recipient.city.trim(),
-        recipientState: recipient.state || null,
-        recipientPostal: recipient.postalCode || null,
-        recipientCountry: recipient.country.trim(),
+          senderName: sender.name,
+          senderEmail: sender.email,
+          senderPhone: sender.phone,
+          senderAddress: sender.address,
+          senderCity: sender.city,
+          senderState: sender.state || null,
+          senderPostal: sender.postalCode || null,
+          senderCountry: sender.country,
 
-        description: packageDetails.description.trim(),
-        weight: packageDetails.weight,
-        length: packageDetails.length,
-        width: packageDetails.width,
-        height: packageDetails.height,
+          recipientName: recipient.name,
+          recipientEmail: recipient.email,
+          recipientPhone: recipient.phone,
+          recipientAddress: recipient.address,
+          recipientCity: recipient.city,
+          recipientState: recipient.state || null,
+          recipientPostal: recipient.postalCode || null,
+          recipientCountry: recipient.country,
 
-        serviceCode,
-        serviceName: service.name,
-        shippingPrice: service.price,
+          description: packageDetails.description,
+          weight: packageDetails.weight,
+          length: packageDetails.length,
+          width: packageDetails.width,
+          height: packageDetails.height,
 
-        estimatedDelivery,
+          serviceCode,
+          serviceName: service.name,
+          shippingPrice: service.price,
 
-        package: {
-          create: {
-            description: packageDetails.description.trim(),
-            weight: packageDetails.weight,
-            length: packageDetails.length,
-            width: packageDetails.width,
-            height: packageDetails.height,
+          estimatedDelivery,
+
+          package: {
+            create: {
+              description: packageDetails.description,
+              weight: packageDetails.weight,
+              length: packageDetails.length,
+              width: packageDetails.width,
+              height: packageDetails.height,
+            },
+          },
+
+          trackingEvents: {
+            create: {
+              status: "PENDING",
+              location: sender.city,
+              description: "Shipment information received.",
+            },
+          },
+
+          payment: {
+            create: {
+              amount: service.price,
+              currency: "USD",
+              status: "PENDING",
+            },
           },
         },
 
-        trackingEvents: {
-          create: {
-            status: "PENDING",
-            location: sender.city.trim(),
-            description: "Shipment information received.",
-          },
+        include: {
+          package: true,
+          trackingEvents: true,
+          payment: true,
         },
-
-        payment: {
-          create: {
-            amount: service.price,
-            currency: "USD",
-            status: "PENDING",
+      });
+    } catch (error) {
+      // Handle simultaneous requests using the same key.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        const duplicateShipment = await prisma.shipment.findUnique({
+          where: {
+            idempotencyKey,
           },
-        },
-      },
+          include: {
+            payment: true,
+          },
+        });
 
-      include: {
-        package: true,
-        trackingEvents: true,
-        payment: true,
-      },
-    });
+        if (duplicateShipment) {
+          return shipmentResponse(
+            duplicateShipment,
+            "This shipment was already created for this request.",
+            false,
+            false,
+            200
+          );
+        }
 
-    // Email notification results
+        return NextResponse.json(
+          {
+            success: false,
+            message:
+              "Your shipment request is still being processed. Please try again using the same request.",
+          },
+          { status: 409 }
+        );
+      }
+
+      throw error;
+    }
+
+    // Send recipient confirmation email.
     let emailSent = false;
     let senderEmailSent = false;
 
-    // Send recipient confirmation email
     try {
       const emailResult = await sendShipmentCreatedEmail({
         recipientEmail: shipment.recipientEmail,
@@ -254,14 +407,11 @@ export async function POST(request: NextRequest) {
       } else {
         emailSent = true;
       }
-    } catch (emailError) {
-      console.error(
-        "Recipient confirmation email error:",
-        emailError
-      );
+    } catch (error) {
+      console.error("Recipient email error:", error);
     }
 
-    // Send sender confirmation email
+    // Send sender confirmation email.
     try {
       const senderEmailResult =
         await sendSenderShipmentConfirmationEmail({
@@ -282,33 +432,17 @@ export async function POST(request: NextRequest) {
       } else {
         senderEmailSent = true;
       }
-    } catch (senderEmailError) {
-      console.error(
-        "Sender confirmation email error:",
-        senderEmailError
-      );
+    } catch (error) {
+      console.error("Sender email error:", error);
     }
 
-    // Return successful shipment response
-    return NextResponse.json(
-      {
-        success: true,
-        message: "Shipment created successfully.",
-        emailSent,
-        senderEmailSent,
-
-        shipment: {
-          id: shipment.id,
-          trackingNumber: shipment.trackingNumber,
-          status: shipment.status,
-          service: shipment.serviceName,
-          shippingPrice: shipment.shippingPrice.toString(),
-          currency: "USD",
-          estimatedDelivery: shipment.estimatedDelivery,
-          paymentStatus: shipment.payment?.status,
-        },
-      },
-      { status: 201 }
+    // Return newly created shipment.
+    return shipmentResponse(
+      shipment,
+      "Shipment created successfully.",
+      emailSent,
+      senderEmailSent,
+      201
     );
   } catch (error) {
     console.error("Shipment creation error:", error);
@@ -316,8 +450,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        message:
-          "Unable to create shipment. Please try again.",
+        message: "Unable to create shipment. Please try again.",
       },
       { status: 500 }
     );

@@ -316,10 +316,7 @@ export default function TrackingPage() {
           © {new Date().getFullYear()} FedEx Delivery. All rights reserved.
         </p>
 
-        <p className="mt-2">
-          Independent shipping platform, not affiliated with or endorsed by
-          FedEx Corporation.
-        </p>
+      
       </footer>
     </main>
   );
