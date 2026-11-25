@@ -529,8 +529,7 @@ export default function ShippingPage() {
 
         <footer className="bg-gray-900 text-gray-400 py-7 text-center text-xs">
           © {new Date().getFullYear()} FedEx Delivery.
-          Independent shipping platform, not affiliated with or
-          endorsed by FedEx Corporation.
+    All rights reserved.
         </footer>
       </main>
     );
@@ -1165,8 +1164,7 @@ export default function ShippingPage() {
 
       <footer className="bg-gray-900 text-gray-400 py-7 text-center text-xs">
         © {new Date().getFullYear()} FedEx Delivery.
-        Independent shipping platform, not affiliated with or
-        endorsed by FedEx Corporation.
+        
       </footer>
     </main>
   );

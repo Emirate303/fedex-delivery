@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "FedEx Delivery | Shipping and Tracking",
   description:
-    "Independent shipping and delivery management platform.",
+    "shipping and delivery management platform.",
 };
 
 export default function RootLayout({

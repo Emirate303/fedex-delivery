@@ -424,7 +424,7 @@ export default function Home() {
               </h3>
 
               <p className="text-gray-400 text-sm leading-relaxed">
-                An independent shipping and delivery management platform.
+                A shipping and delivery management platform.
               </p>
             </div>
 

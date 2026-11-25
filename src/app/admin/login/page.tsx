@@ -128,7 +128,7 @@ export default function AdminLoginPage() {
         </div>
 
         <p className="text-xs text-gray-400 text-center mt-6">
-          Independent shipping platform. Private administration access.
+        shipping platform. Private administration access.
         </p>
       </div>
     </main>
