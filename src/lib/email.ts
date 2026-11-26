@@ -236,9 +236,7 @@ export async function sendShipmentCreatedEmail({
   const safeSender = escapeHtml(senderName);
   const safeTracking = escapeHtml(trackingNumber);
   const safeService = escapeHtml(serviceName);
-  const safePrice = escapeHtml(shippingPrice);
   const deliveryDate = formatDate(estimatedDelivery);
-
   const html = emailLayout(`
     <p style="margin:0 0 18px;font-size:15px;">Hello ${safeName},</p>
 
@@ -319,9 +317,7 @@ export async function sendSenderShipmentConfirmationEmail({
   const safeRecipient = escapeHtml(recipientName);
   const safeTracking = escapeHtml(trackingNumber);
   const safeService = escapeHtml(serviceName);
-  const safePrice = escapeHtml(shippingPrice);
   const deliveryDate = formatDate(estimatedDelivery);
-
   const html = emailLayout(`
     <p style="margin:0 0 18px;font-size:15px;">Hello ${safeName},</p>
 
