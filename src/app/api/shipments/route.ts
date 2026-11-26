@@ -93,7 +93,6 @@ function shipmentResponse(
     trackingNumber: string;
     status: string;
     serviceName: string;
-    shippingPrice: { toString(): string };
     estimatedDelivery: Date | null;
     payment: { status: string } | null;
   },
