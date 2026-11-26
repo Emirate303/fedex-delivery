@@ -1,3 +1,4 @@
+
 import { NextRequest, NextResponse } from "next/server";
 import { randomBytes, createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
@@ -88,14 +89,16 @@ type ShipmentWithRelations = Prisma.ShipmentGetPayload<{
 
 // Standardized shipment response.
 function shipmentResponse(
-  shipment: {
-    id: string;
-    trackingNumber: string;
-    status: string;
-    serviceName: string;
-    estimatedDelivery: Date | null;
-    payment: { status: string } | null;
-  },
+  shipment: Pick<
+    ShipmentWithRelations,
+    | "id"
+    | "trackingNumber"
+    | "status"
+    | "serviceName"
+    | "shippingPrice"
+    | "estimatedDelivery"
+    | "payment"
+  >,
   message: string,
   emailSent: boolean,
   senderEmailSent: boolean,
@@ -135,7 +138,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           success: false,
-          message: "A valid shipment request key is required. Please refresh the page and try again.",
+          message:
+            "A valid shipment request key is required. Please refresh the page and try again.",
         },
         { status: 400 }
       );
@@ -383,7 +387,7 @@ export async function POST(request: NextRequest) {
       throw error;
     }
 
-    // Send recipient confirmation email.
+    // Send recipient notification email.
     let emailSent = false;
     let senderEmailSent = false;
 
@@ -394,7 +398,6 @@ export async function POST(request: NextRequest) {
         senderName: shipment.senderName,
         trackingNumber: shipment.trackingNumber,
         serviceName: shipment.serviceName,
-        shippingPrice: shipment.shippingPrice.toString(),
         estimatedDelivery: shipment.estimatedDelivery!,
       });
 
