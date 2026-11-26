@@ -1,6 +1,5 @@
-import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+import nodemailer from "nodemailer";
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (char) => {
@@ -16,16 +15,58 @@ function escapeHtml(value: string): string {
   });
 }
 
-function checkEmailConfig() {
-  const fromEmail = process.env.RESEND_FROM_EMAIL;
+function getEmailConfig() {
+  const user = process.env.GMAIL_USER?.trim();
+  const password = process.env.GMAIL_APP_PASSWORD?.replace(/\s/g, "");
 
-  if (!process.env.RESEND_API_KEY || !fromEmail) {
-    throw new Error("Email configuration is incomplete.");
+  if (!user || !password) {
+    throw new Error("Gmail SMTP configuration is incomplete.");
   }
 
-  return fromEmail;
+  const transporter = nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    auth: {
+      user,
+      pass: password,
+    },
+  });
+
+  return {
+    user,
+    transporter,
+  };
 }
 
+async function sendEmail({
+  to,
+  subject,
+  html,
+}: {
+  to: string;
+  subject: string;
+  html: string;
+}) {
+  const { user, transporter } = getEmailConfig();
+
+  const result = await transporter.sendMail({
+    from: {
+      name: "FedEx Delivery",
+      address: user,
+    },
+    to,
+    subject,
+    html,
+  });
+
+  return {
+    data: result,
+    error: null,
+  };
+}
+
+// Shipment status notification.
 export async function sendShipmentStatusEmail({
   recipientEmail,
   recipientName,
@@ -41,16 +82,15 @@ export async function sendShipmentStatusEmail({
   description: string;
   location: string;
 }) {
-  const fromEmail = checkEmailConfig();
-
-  return resend.emails.send({
-    from: fromEmail,
+  return sendEmail({
     to: recipientEmail,
     subject: `Shipment Update: ${trackingNumber}`,
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 24px;">
         <h2>Shipment Status Update</h2>
+
         <p>Hello ${escapeHtml(recipientName)},</p>
+
         <p>Your shipment status has been updated.</p>
 
         <div style="background: #f3f4f6; padding: 20px; border-radius: 8px;">
@@ -67,6 +107,7 @@ export async function sendShipmentStatusEmail({
   });
 }
 
+// Recipient shipment confirmation.
 export async function sendShipmentCreatedEmail({
   recipientEmail,
   recipientName,
@@ -84,10 +125,7 @@ export async function sendShipmentCreatedEmail({
   shippingPrice: string;
   estimatedDelivery: Date;
 }) {
-  const fromEmail = checkEmailConfig();
-
-  return resend.emails.send({
-    from: fromEmail,
+  return sendEmail({
     to: recipientEmail,
     subject: `Shipment Created: ${trackingNumber}`,
     html: `
@@ -96,7 +134,7 @@ export async function sendShipmentCreatedEmail({
 
         <p>Hello ${escapeHtml(recipientName)},</p>
 
-        <p>A shipment addressed to you has been successfully registered.</p>
+        <p>A shipment addressed to you has been registered.</p>
 
         <div style="background: #f3f4f6; padding: 20px; border-radius: 8px;">
           <p><strong>Tracking Number:</strong> ${escapeHtml(trackingNumber)}</p>
@@ -108,12 +146,13 @@ export async function sendShipmentCreatedEmail({
         </div>
 
         <p>Keep your tracking number to check shipment progress on our tracking page.</p>
-
         <p>FedEx Delivery</p>
       </div>
     `,
   });
 }
+
+// Sender shipment confirmation.
 export async function sendSenderShipmentConfirmationEmail({
   senderEmail,
   senderName,
@@ -131,10 +170,7 @@ export async function sendSenderShipmentConfirmationEmail({
   shippingPrice: string;
   estimatedDelivery: Date;
 }) {
-  const fromEmail = checkEmailConfig();
-
-  return resend.emails.send({
-    from: fromEmail,
+  return sendEmail({
     to: senderEmail,
     subject: `Shipment Registered: ${trackingNumber}`,
     html: `
@@ -143,7 +179,7 @@ export async function sendSenderShipmentConfirmationEmail({
 
         <p>Hello ${escapeHtml(senderName)},</p>
 
-        <p>Your shipment has been successfully registered.</p>
+        <p>Your shipment has been registered.</p>
 
         <div style="background: #f3f4f6; padding: 20px; border-radius: 8px;">
           <p><strong>Tracking Number:</strong> ${escapeHtml(trackingNumber)}</p>
