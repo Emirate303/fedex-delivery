@@ -315,6 +315,7 @@ export async function sendSenderShipmentConfirmationEmail({
   const safeRecipient = escapeHtml(recipientName);
   const safeTracking = escapeHtml(trackingNumber);
   const safeService = escapeHtml(serviceName);
+  const safePrice = escapeHtml(shippingPrice);
   const deliveryDate = formatDate(estimatedDelivery);
   const html = emailLayout(`
     <p style="margin:0 0 18px;font-size:15px;">Hello ${safeName},</p>
@@ -341,7 +342,7 @@ export async function sendSenderShipmentConfirmationEmail({
 
           <p style="margin:0 0 8px;font-size:12px;color:#666666;">SHIPPING PRICE</p>
           <p style="margin:0 0 18px;font-size:14px;color:#222222;">${safePrice}</p>
-
+          <p style="margin:0;font-size:14px;color:#222222;">${safePrice}</p>
           <p style="margin:0 0 8px;font-size:12px;color:#666666;">ESTIMATED DELIVERY</p>
           <p style="margin:0;font-size:14px;color:#222222;">${deliveryDate}</p>
         </td>
