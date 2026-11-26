@@ -302,7 +302,6 @@ export async function sendSenderShipmentConfirmationEmail({
   recipientName,
   trackingNumber,
   serviceName,
-  shippingPrice,
   estimatedDelivery,
 }: {
   senderEmail: string;
@@ -310,7 +309,6 @@ export async function sendSenderShipmentConfirmationEmail({
   recipientName: string;
   trackingNumber: string;
   serviceName: string;
-  shippingPrice: string;
   estimatedDelivery: Date;
 }) {
   const safeName = escapeHtml(senderName);
