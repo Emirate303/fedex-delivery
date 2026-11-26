@@ -221,7 +221,6 @@ export async function sendShipmentCreatedEmail({
   senderName,
   trackingNumber,
   serviceName,
-  shippingPrice,
   estimatedDelivery,
 }: {
   recipientEmail: string;
@@ -229,7 +228,6 @@ export async function sendShipmentCreatedEmail({
   senderName: string;
   trackingNumber: string;
   serviceName: string;
-  shippingPrice: string;
   estimatedDelivery: Date;
 }) {
   const safeName = escapeHtml(recipientName);
